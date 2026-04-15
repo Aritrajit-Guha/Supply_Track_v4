@@ -2,10 +2,12 @@ import { createContext, useState, useEffect, useContext, useCallback } from 'rea
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL;
+
 const AuthContext = createContext();
 export const useAuth = () => useContext(AuthContext);
 
-const API = 'http://127.0.0.1:5000/api';
+const API = `${BACKEND_URL}/api`;
 
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);

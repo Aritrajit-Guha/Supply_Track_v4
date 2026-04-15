@@ -1,6 +1,14 @@
-import { io } from 'socket.io-client';
+import { io } from "socket.io-client";
 
-// Connect to the Flask backend URL
-const socket = io('http://127.0.0.1:5000');
+const SOCKET_URL = import.meta.env.VITE_BACKEND_URL;
+
+const socket = io(SOCKET_URL, {
+  transports: ["websocket", "polling"], 
+  autoConnect: true,
+});
+
+socket.on("connect", () => {
+  console.log("✅ Socket connected to:", SOCKET_URL, "with ID:", socket.id);
+});
 
 export default socket;

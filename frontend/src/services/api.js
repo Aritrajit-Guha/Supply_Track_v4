@@ -1,7 +1,9 @@
 import axios from 'axios';
 
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL;
+
 const instance = axios.create({
-  baseURL: 'http://127.0.0.1:5000/api',
+  baseURL: `${BACKEND_URL}/api`,
   timeout: 10000,
   headers: {
     'Content-Type': 'application/json',

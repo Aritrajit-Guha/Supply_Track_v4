@@ -3,7 +3,9 @@ import { useParams, useNavigate } from 'react-router-dom';
 import api from '../services/api';
 import './TruckView.css';
 
-const API = 'http://127.0.0.1:5000/api';
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL;
+
+const API = `${BACKEND_URL}/api`;
 
 const TruckView = () => {
   const [hoveredBatch, setHoveredBatch] = useState(null);

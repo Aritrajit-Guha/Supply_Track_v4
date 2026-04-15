@@ -2,6 +2,8 @@ import { useState } from 'react';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
 
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL;
+
 const AuthPage = () => {
   const [isLogin, setIsLogin] = useState(true);
   
@@ -53,7 +55,7 @@ const AuthPage = () => {
       return;
     }
 
-    const url = isLogin ? 'http://127.0.0.1:5000/api/auth/login' : 'http://127.0.0.1:5000/api/auth/register';
+    const url = isLogin ? `${BACKEND_URL}/api/auth/login` : `${BACKEND_URL}/api/auth/register`;
 
     try {
       const response = await api.post(url, formData);
