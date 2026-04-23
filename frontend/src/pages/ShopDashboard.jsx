@@ -3,6 +3,7 @@ import { useLocation,useNavigate } from 'react-router-dom';
 import api from '../services/api';
 import socket from '../services/socket';
 import AuctionModal from '../components/AuctionModal';
+import AIChatWidget from '../components/AIChatWidget';
 import { useAuth } from '../context/AuthContext';
 
 
@@ -565,6 +566,7 @@ export default function ShopDashboard() {
       )}
 
       {activeAuction && <AuctionModal auctionData={activeAuction} onClose={() => setActiveAuction(null)} />}
+      <AIChatWidget page="shop" />
     </div>
   );
 }

@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import api from '../services/api';
 import socket from '../services/socket';
 import AuctionModal from '../components/AuctionModal';
+import AIChatWidget from '../components/AIChatWidget';
 import { useAuth } from '../context/AuthContext';
 import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
 import L from 'leaflet';
@@ -296,6 +297,7 @@ export default function AdminDashboard() {
       </div>
 
       {activeAuction && <AuctionModal auctionData={activeAuction} onClose={() => setActiveAuction(null)} />}
+      <AIChatWidget page="fleet" accent="dark" />
 
       <style>{`
         @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }

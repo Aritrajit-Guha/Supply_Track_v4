@@ -31,11 +31,13 @@ def create_app():
     from .controllers.auction_controller import auction_bp
     from .controllers.auth_controller import auth_bp
     from .controllers.shop_controller import shop_bp   # NEW
+    from .controllers.ai_controller import ai_bp
 
     app.register_blueprint(truck_bp, url_prefix='/api/truck')
     app.register_blueprint(auction_bp, url_prefix='/api/auction')
     app.register_blueprint(auth_bp, url_prefix='/api/auth')
     app.register_blueprint(shop_bp, url_prefix='/api/shop')  # NEW
+    app.register_blueprint(ai_bp, url_prefix='/api/ai')
 
     @app.route('/')
     def home():
