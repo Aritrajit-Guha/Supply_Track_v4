@@ -1,5 +1,6 @@
 from flask import Blueprint, request, jsonify
 from app import db, socketio
+from app.services.fleet_automation_service import seed_trucks_if_needed, sync_and_advance_fleet
 import jwt
 import os
 import uuid
@@ -156,6 +157,7 @@ def place_order():
     if not shop:
         return jsonify({"error": "Unauthorized"}), 401
 
+    seed_trucks_if_needed()
     data       = request.json
     cart_items = data.get('items', [])
     if not cart_items:
@@ -218,6 +220,7 @@ def place_order():
     }
 
     db.orders.insert_one(new_order)
+    sync_and_advance_fleet()
 
     db.shops.update_one(
         {"shop_id": shop['shop_id']},
@@ -249,6 +252,7 @@ def get_orders():
     shop = get_shop_from_token()
     if not shop:
         return jsonify({"error": "Unauthorized"}), 401
+    sync_and_advance_fleet()
     orders = list(db.orders.find({"shop_id": shop['shop_id']}, {'_id': 0}).sort("created_at", -1))
     return jsonify(orders), 200
 
@@ -258,6 +262,7 @@ def get_order(order_id):
     shop = get_shop_from_token()
     if not shop:
         return jsonify({"error": "Unauthorized"}), 401
+    sync_and_advance_fleet()
     order = db.orders.find_one({"order_id": order_id, "shop_id": shop['shop_id']}, {'_id': 0})
     if not order:
         return jsonify({"error": "Order not found"}), 404

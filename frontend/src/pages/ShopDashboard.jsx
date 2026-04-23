@@ -17,12 +17,6 @@ const haversine = (lat1, lon1, lat2, lon2) => {
 const CATEGORIES = ['All','Fruits','Vegetables','Dairy','Frozen','Grains','Oils','Poultry'];
 const CAT_ICONS  = { Fruits:'🍎', Vegetables:'🥦', Dairy:'🥛', Frozen:'❄️', Grains:'🌾', Oils:'🫙', Poultry:'🥚', All:'🛒' };
 
-const TRUCK_INFO = {
-  'T-1001': { driver:'Ramesh Kumar', route:'Kolkata → Durgapur', eta:'3h' },
-  'T-1002': { driver:'Suresh Patel', route:'Burdwan → Asansol',  eta:'1h' },
-  'T-1003': { driver:'Priya Singh',  route:'Ranchi → Dhanbad',   eta:'5h' },
-};
-
 const STATUS_COLORS = {
   Confirmed:    { bg:'#dbeafe', color:'#1d4ed8', dot:'#3b82f6' },
   Dispatched:   { bg:'#fef9c3', color:'#854d0e', dot:'#eab308' },
@@ -53,6 +47,7 @@ export default function ShopDashboard() {
   const [loading,          setLoading]          = useState(false);
   const [notes,            setNotes]            = useState('');
   const [creditAnim,       setCreditAnim]       = useState(false);
+  const [truckLookup,      setTruckLookup]      = useState({});
 
 
 
@@ -60,20 +55,59 @@ export default function ShopDashboard() {
     api.get(`/shop/catalogue`).then(r => setCatalogue(r.data)).catch(console.error);
   }, []);
 
+  const fetchTruckDetails = useCallback(async (truckIds) => {
+    if (!truckIds.length) {
+      setTruckLookup({});
+      return;
+    }
+
+    try {
+      const responses = await Promise.all(
+        truckIds.map((truckId) => api.get(`/truck/status/${truckId}`))
+      );
+      const nextLookup = responses.reduce((acc, response) => {
+        const truck = response.data;
+        acc[truck.truck_id] = truck;
+        return acc;
+      }, {});
+      setTruckLookup(nextLookup);
+    } catch (error) {
+      console.error('Failed to fetch truck details:', error);
+    }
+  }, []);
+
   const fetchOrders = useCallback(async() => {
     if(!user) return;
     try{
-      const r = await api.get(`/shop/orders`)
-      .then(r => setOrders(r.data))
-      .catch(console.error);
-  } catch(e){
-    console.log(e);
-  }
-}, [user]);
+      const response = await api.get(`/shop/orders`);
+      const nextOrders = response.data;
+      setOrders(nextOrders);
+
+      const assignedTruckIds = [...new Set(nextOrders.map(order => order.assigned_truck).filter(Boolean))];
+      fetchTruckDetails(assignedTruckIds);
+
+      setSelectedOrder((current) => {
+        if (!current) {
+          return current;
+        }
+        return nextOrders.find((order) => order.order_id === current.order_id) || current;
+      });
+    } catch(e){
+      console.log(e);
+    }
+  }, [fetchTruckDetails, user]);
 
   useEffect(() => { 
     fetchOrders();
    }, [fetchOrders]);
+
+  useEffect(() => {
+    const intervalId = setInterval(() => {
+      fetchOrders();
+    }, 10000);
+
+    return () => clearInterval(intervalId);
+  }, [fetchOrders]);
 
   useEffect(() => {
     const handleEmergency = (data) => {
@@ -161,6 +195,7 @@ export default function ShopDashboard() {
   },[view,fetchOrders]);
 
   const greenCredits = user?.green_credits || 0;
+  const selectedTruck = selectedOrder?.assigned_truck ? truckLookup[selectedOrder.assigned_truck] : null;
 
   return (
     <div style={{ fontFamily:"'Segoe UI',sans-serif", background:'#f0f4f8', minHeight:'100vh' }}>
@@ -406,7 +441,7 @@ export default function ShopDashboard() {
             <div style={{ display:'flex', flexDirection:'column', gap:'12px' }}>
               {orders.map(order => {
                 const sc    = STATUS_COLORS[order.status] || STATUS_COLORS.Confirmed;
-                const truck = TRUCK_INFO[order.assigned_truck] || {};
+                const truck = truckLookup[order.assigned_truck] || {};
                 return (
                   <div key={order.order_id}
                     onClick={() => { setSelectedOrder(order); navigate('/orders'); }}
@@ -422,7 +457,7 @@ export default function ShopDashboard() {
                         </div>
                         {order.assigned_truck && (
                           <div style={{ fontSize:'12px', color:'#3b82f6', fontWeight:600, marginTop:'6px' }}>
-                            🚛 {order.assigned_truck} · {truck.driver} · {truck.route}
+                            🚛 {order.assigned_truck} · {truck.driver || 'Driver syncing'} · {truck.origin && truck.destination ? `${truck.origin} → ${truck.destination}` : 'Route syncing'}
                           </div>
                         )}
                       </div>
@@ -468,8 +503,8 @@ export default function ShopDashboard() {
               <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:'20px' }}>
                 {[
                   { label:'Billed To',       val: selectedOrder.shop_name,       sub: selectedOrder.shop_id },
-                  { label:'Order ID',        val: selectedOrder.order_id,        sub: `ETA: ${selectedOrder.estimated_delivery}` },
-                  { label:'Assigned Truck',  val: selectedOrder.assigned_truck || 'TBD', sub: TRUCK_INFO[selectedOrder.assigned_truck]?.driver || '' },
+                  { label:'Order ID',        val: selectedOrder.order_id,        sub: `ETA: ${selectedTruck ? `${selectedTruck.eta_hours}h` : selectedOrder.estimated_delivery}` },
+                  { label:'Assigned Truck',  val: selectedOrder.assigned_truck || 'TBD', sub: selectedTruck?.driver || '' },
                   { label:'Payment',         val: '✓ ' + selectedOrder.payment_status, sub: '', green: true },
                 ].map(f => (
                   <div key={f.label}>
@@ -482,11 +517,11 @@ export default function ShopDashboard() {
             </div>
 
             {/* Truck route bar */}
-            {selectedOrder.assigned_truck && TRUCK_INFO[selectedOrder.assigned_truck] && (
+            {selectedOrder.assigned_truck && selectedTruck && (
               <div style={{ background:'#eff6ff', borderBottom:'2px solid #bfdbfe', padding:'12px 32px', display:'flex', alignItems:'center', gap:'12px' }}>
                 <span style={{ fontSize:'20px' }}>🚛</span>
                 <div style={{ fontSize:'13px', color:'#1d4ed8' }}>
-                  <strong>{selectedOrder.assigned_truck}</strong> · {TRUCK_INFO[selectedOrder.assigned_truck].driver} · Route: {TRUCK_INFO[selectedOrder.assigned_truck].route} · ETA: {TRUCK_INFO[selectedOrder.assigned_truck].eta} · IoT sensors active
+                  <strong>{selectedOrder.assigned_truck}</strong> · {selectedTruck.driver} · Route: {selectedTruck.origin} → {selectedTruck.destination} · ETA: {selectedTruck.eta_hours}h · Status: {selectedTruck.status}
                 </div>
                 <button onClick={() => navigate(`/truck/${selectedOrder.assigned_truck}`)}
                   style={{ marginLeft:'auto', background:'#1d4ed8', color:'white', border:'none', borderRadius:'6px', padding:'6px 14px', cursor:'pointer', fontSize:'12px', fontWeight:700 }}>

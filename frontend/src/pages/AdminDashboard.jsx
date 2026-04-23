@@ -158,26 +158,39 @@ export default function AdminDashboard() {
   const { user, logout } = useAuth();
 
   useEffect(() => {
-    // 1. We removed the hardcoded mock data!
-    api.get(`/truck/fleet`)
-      .then(r => {
-        setFleet(r.data);
-        if (r.data.length > 0) {
-          setSelectedTruck(r.data[0].truck_id);
-        } else {
-          setSelectedTruck(null);
-        }
-        const total = r.data.reduce((s, t) => s + (t.green_credits_earned || 0), 0);
-        setGreenCredits(total + (user?.green_credits || 0));
-      })
-      .catch((e) => console.error("Error fetching fleet:", e));
+    const fetchFleet = () => {
+      api.get(`/truck/fleet`)
+        .then(r => {
+          setFleet(r.data);
+          if (r.data.length > 0) {
+            setSelectedTruck(current => current && r.data.some(t => t.truck_id === current) ? current : r.data[0].truck_id);
+          } else {
+            setSelectedTruck(null);
+          }
+          const total = r.data.reduce((s, t) => s + (t.green_credits_earned || 0), 0);
+          setGreenCredits(total + (user?.green_credits || 0));
+        })
+        .catch((e) => console.error("Error fetching fleet:", e));
+    };
 
-    socket.on('emergency_auction_started', (data) => {
+    const handleFleetUpdate = () => fetchFleet();
+    const handleEmergencyAuction = (data) => {
       if (!user?.lat || !user?.lng) return;
-      if (haversine(user.lat, user.lng, data.truck_lat, data.truck_lng) <= 15) // Reverting your hackathon fix back to 15km
+      if (haversine(user.lat, user.lng, data.truck_lat, data.truck_lng) <= 15) {
         setActiveAuction(data);
-    });
-    return () => socket.off('emergency_auction_started');
+      }
+    };
+
+    fetchFleet();
+    const intervalId = setInterval(fetchFleet, 10000);
+    socket.on('fleet_updated', handleFleetUpdate);
+    socket.on('emergency_auction_started', handleEmergencyAuction);
+
+    return () => {
+      clearInterval(intervalId);
+      socket.off('fleet_updated', handleFleetUpdate);
+      socket.off('emergency_auction_started', handleEmergencyAuction);
+    };
   }, [user]);
 
   const criticalCount = fleet.filter(t => t.alert_level === 'critical').length;

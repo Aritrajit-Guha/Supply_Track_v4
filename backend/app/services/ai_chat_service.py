@@ -3,7 +3,7 @@ from datetime import datetime
 
 from app import db
 from app.controllers.auction_controller import active_auction_state
-from app.controllers.truck_controller import FLEET
+from app.services.fleet_automation_service import get_trucks_for_ids, seed_trucks_if_needed, sync_and_advance_fleet
 from .gemini_service import GeminiServiceError, gemini_is_configured, generate_json_response
 
 
@@ -55,6 +55,9 @@ def build_chat_response(shop_id: str, question: str, page: str | None = None) ->
 
 
 def build_chat_context(shop_id: str, question: str, page: str | None = None) -> dict:
+    seed_trucks_if_needed()
+    sync_and_advance_fleet()
+
     shop = db.shops.find_one(
         {"shop_id": shop_id},
         {"_id": 0, "password": 0},
@@ -85,11 +88,7 @@ def build_chat_context(shop_id: str, question: str, page: str | None = None) -> 
             if order.get("assigned_truck")
         }
     )
-    assigned_trucks = [
-        FLEET[truck_id]
-        for truck_id in assigned_truck_ids
-        if truck_id in FLEET
-    ]
+    assigned_trucks = get_trucks_for_ids(assigned_truck_ids)
 
     active_auction = None
     if active_auction_state.get("is_active"):
