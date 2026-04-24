@@ -4,7 +4,7 @@ import api from '../services/api';
 import socket from '../services/socket';
 import AuctionModal from '../components/AuctionModal';
 import AIChatWidget from '../components/AIChatWidget';
-import { useAuth } from '../context/AuthContext';
+import { useAuth } from '../context/useAuth';
 
 
 
@@ -22,6 +22,7 @@ const STATUS_COLORS = {
   Dispatched:   { bg:'#fef9c3', color:'#854d0e', dot:'#eab308' },
   'In Transit': { bg:'#ede9fe', color:'#5b21b6', dot:'#8b5cf6' },
   Delivered:    { bg:'#dcfce7', color:'#166534', dot:'#22c55e' },
+  'Auctioned Away': { bg:'#fee2e2', color:'#991b1b', dot:'#ef4444' },
 };
 
 export default function ShopDashboard() {
@@ -48,12 +49,21 @@ export default function ShopDashboard() {
   const [notes,            setNotes]            = useState('');
   const [creditAnim,       setCreditAnim]       = useState(false);
   const [truckLookup,      setTruckLookup]      = useState({});
+  const [recommendations,  setRecommendations]  = useState({ recommendations: [], highlights: [], summary: '' });
+  const [auctionNotice,    setAuctionNotice]    = useState(null);
 
 
 
   useEffect(() => {
     api.get(`/shop/catalogue`).then(r => setCatalogue(r.data)).catch(console.error);
   }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    api.get(`/shop/recommendations`)
+      .then(r => setRecommendations(r.data))
+      .catch(console.error);
+  }, [user]);
 
   const fetchTruckDetails = useCallback(async (truckIds) => {
     if (!truckIds.length) {
@@ -111,14 +121,19 @@ export default function ShopDashboard() {
 
   useEffect(() => {
     const handleEmergency = (data) => {
-      console.log("🚨 [SOCKET RECEIVED] Emergency Broadcast:", data);
-      console.log("📍 [LOCAL USER DATA]", user);
+      if (!user) {
+        return;
+      }
 
-      // --- HACKATHON DEMO FAILSAFE ---
-      // If the user's GPS data is missing from local storage, 
-      // we bypass the filter so the demo doesn't fail on stage!
-      if (!user || !user.lat || !user.lng) {
-        console.warn("⚠️ User has no coordinates in memory! Bypassing distance check for demo.");
+      const eligibleShopIds = data.eligible_shop_ids || [];
+      if (eligibleShopIds.length > 0) {
+        if (eligibleShopIds.includes(user.shop_id)) {
+          setActiveAuction(data);
+        }
+        return;
+      }
+
+      if (!user.lat || !user.lng) {
         setActiveAuction(data);
         return;
       }
@@ -131,13 +146,8 @@ export default function ShopDashboard() {
         Number(data.truck_lng)
       );
 
-      console.log(`📏 Distance to spoiling truck: ${dist.toFixed(2)} km`);
-
-      // If within our massive demo radius, trigger the modal!
       if (dist <= 50) {
         setActiveAuction(data);
-      } else {
-        console.log("🚚 Truck is out of range. Ignoring.");
       }
     };
 
@@ -148,10 +158,58 @@ export default function ShopDashboard() {
     };
   }, [user]);
 
+  useEffect(() => {
+    if (!user) return undefined;
+
+    const handleAuctionResult = (data) => {
+      if (!data) return;
+
+      const isWinner = data.winner_id && data.winner_id === user.shop_id;
+      const isSource = data.source_shop_id && data.source_shop_id === user.shop_id;
+
+      if (!isWinner && !isSource) {
+        return;
+      }
+
+      if (isWinner) {
+        setAuctionNotice({
+          tone: 'success',
+          title: 'Auction won',
+          body: `You won the flash auction for truck ${data.truck_id} at Rs ${data.final_price}.`,
+        });
+      } else if (isSource) {
+        setAuctionNotice({
+          tone: data.order_transferred ? 'danger' : 'info',
+          title: data.order_transferred ? 'Batch diverted via auction' : 'Auction finished',
+          body: data.order_transferred
+            ? `${data.winner_name || 'Another shop'} won your flash auction on truck ${data.truck_id}. The batch has been removed from your active fleet.`
+            : `The flash auction for truck ${data.truck_id} has ended.`,
+        });
+      }
+
+      setActiveAuction(null);
+      fetchOrders();
+      api.get('/shop/recommendations').then((r) => setRecommendations(r.data)).catch(() => {});
+      setTimeout(() => setAuctionNotice(null), 7000);
+    };
+
+    socket.on('auction_result', handleAuctionResult);
+    return () => {
+      socket.off('auction_result', handleAuctionResult);
+    };
+  }, [fetchOrders, user]);
+
   const getQty = (id) => cart[id] || 0;
   const setQty = (id, val) => {
     const n = Math.max(0, Number(val));
-    setCart(prev => n === 0 ? (({ [id]: _, ...rest }) => rest)(prev) : { ...prev, [id]: n });
+    setCart((prev) => {
+      if (n !== 0) {
+        return { ...prev, [id]: n };
+      }
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
   };
   const cartCount = Object.values(cart).reduce((a,b) => a+b, 0);
   const cartTotal = catalogue.reduce((s,p) => s + (cart[p.product_id]||0)*p.price_per_unit, 0);
@@ -274,6 +332,37 @@ export default function ShopDashboard() {
               <div style={{ fontSize:'11px', color:'#6ee7b7' }}>Your credits</div>
             </div>
           </div>
+
+          {recommendations?.recommendations?.length > 0 && (
+            <div style={{ background:'linear-gradient(135deg,#fff7ed,#fffbeb)', border:'1px solid #fdba74', borderRadius:'14px', padding:'18px 20px', marginBottom:'20px', boxShadow:'0 8px 24px rgba(249,115,22,0.08)' }}>
+              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'16px', marginBottom:'12px', flexWrap:'wrap' }}>
+                <div>
+                  <div style={{ fontSize:'12px', color:'#c2410c', fontWeight:800, textTransform:'uppercase', letterSpacing:'0.06em', marginBottom:'4px' }}>AI Restock Copilot</div>
+                  <div style={{ fontSize:'18px', color:'#7c2d12', fontWeight:800, marginBottom:'4px' }}>Recommended next replenishment moves</div>
+                  <div style={{ fontSize:'13px', color:'#9a3412', maxWidth:'720px' }}>{recommendations.summary}</div>
+                </div>
+                <button onClick={() => navigate('/orders')} style={{ background:'#fff', color:'#9a3412', border:'1px solid #fdba74', borderRadius:'10px', padding:'10px 14px', cursor:'pointer', fontWeight:700 }}>
+                  Review Orders
+                </button>
+              </div>
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(220px,1fr))', gap:'12px' }}>
+                {recommendations.recommendations.map(rec => (
+                  <div key={rec.product_id} style={{ background:'rgba(255,255,255,0.75)', border:'1px solid #fed7aa', borderRadius:'12px', padding:'14px' }}>
+                    <div style={{ display:'flex', justifyContent:'space-between', gap:'10px', marginBottom:'6px' }}>
+                      <div style={{ fontWeight:800, color:'#7c2d12' }}>{rec.name}</div>
+                      <div style={{ fontSize:'11px', color:'#ea580c', fontWeight:800, textTransform:'uppercase' }}>{rec.action.replace('_', ' ')}</div>
+                    </div>
+                    <div style={{ fontSize:'12px', color:'#9a3412', marginBottom:'8px' }}>{rec.message}</div>
+                    <div style={{ display:'flex', gap:'6px', flexWrap:'wrap' }}>
+                      <span style={{ background:'#fff', borderRadius:'999px', padding:'3px 8px', fontSize:'11px', color:'#9a3412' }}>Avg qty {rec.avg_quantity}</span>
+                      <span style={{ background:'#fff', borderRadius:'999px', padding:'3px 8px', fontSize:'11px', color:'#9a3412' }}>{rec.days_since_last_order} days ago</span>
+                      <span style={{ background:'#fff', borderRadius:'999px', padding:'3px 8px', fontSize:'11px', color:'#9a3412' }}>{rec.storage_temp}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Search + filter */}
           <div style={{ display:'flex', gap:'12px', marginBottom:'20px', flexWrap:'wrap' }}>
@@ -417,7 +506,7 @@ export default function ShopDashboard() {
               </div>
 
               <div style={{ display:'flex', gap:'12px' }}>
-                <button onClick={() => setView('marketplace')} style={{ flex:1, padding:'14px', background:'white', border:'2px solid #e2e8f0', borderRadius:'10px', cursor:'pointer', fontWeight:700, fontSize:'15px', color:'#475569' }}>← Continue Shopping</button>
+                <button onClick={() => navigate('/')} style={{ flex:1, padding:'14px', background:'white', border:'2px solid #e2e8f0', borderRadius:'10px', cursor:'pointer', fontWeight:700, fontSize:'15px', color:'#475569' }}>← Continue Shopping</button>
                 <button onClick={placeOrder} disabled={loading}
                   style={{ flex:2, padding:'14px', background: loading?'#94a3b8':'linear-gradient(135deg,#16a34a,#22c55e)', color:'white', border:'none', borderRadius:'10px', cursor: loading?'default':'pointer', fontWeight:800, fontSize:'16px', boxShadow: loading?'none':'0 4px 16px rgba(34,197,94,0.4)' }}>
                   {loading ? '⏳ Placing Order…' : `✅ Confirm Order — ₹${cartTotal.toLocaleString('en-IN')}`}
@@ -601,6 +690,26 @@ export default function ShopDashboard() {
       )}
 
       {activeAuction && <AuctionModal auctionData={activeAuction} onClose={() => setActiveAuction(null)} />}
+      {auctionNotice && (
+        <div style={{
+          position: 'fixed',
+          top: '84px',
+          right: '24px',
+          zIndex: 400,
+          maxWidth: '360px',
+          background: auctionNotice.tone === 'success' ? '#052e16' : auctionNotice.tone === 'danger' ? '#450a0a' : '#0f172a',
+          color: 'white',
+          border: `1px solid ${auctionNotice.tone === 'success' ? '#16a34a' : auctionNotice.tone === 'danger' ? '#ef4444' : '#334155'}`,
+          borderRadius: '12px',
+          padding: '14px 16px',
+          boxShadow: '0 18px 40px rgba(0,0,0,0.22)',
+        }}>
+          <div style={{ fontSize: '12px', fontWeight: 800, textTransform: 'uppercase', marginBottom: '4px', color: auctionNotice.tone === 'success' ? '#86efac' : auctionNotice.tone === 'danger' ? '#fca5a5' : '#93c5fd' }}>
+            {auctionNotice.title}
+          </div>
+          <div style={{ fontSize: '13px', lineHeight: 1.5 }}>{auctionNotice.body}</div>
+        </div>
+      )}
       <AIChatWidget page="shop" />
     </div>
   );

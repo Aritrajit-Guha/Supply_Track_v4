@@ -13,6 +13,7 @@ import jwt
 import os
 
 truck_bp = Blueprint('truck', __name__)
+ACTIVE_ORDER_FILTER = {"$nin": ["Delivered", "Auctioned Away"]}
 
 
 # Product image map â€” matches catalogue product_ids to Unsplash images
@@ -61,7 +62,7 @@ def get_fleet():
     sync_and_advance_fleet()
 
     shop_orders = list(db.orders.find(
-        {"shop_id": shop['shop_id'], "assigned_truck": {"$exists": True}, "status": {"$ne": "Delivered"}},
+        {"shop_id": shop['shop_id'], "assigned_truck": {"$exists": True, "$ne": None}, "status": ACTIVE_ORDER_FILTER},
         {"assigned_truck": 1, "items": 1}
     ))
     assigned_truck_ids = list(set(o['assigned_truck'] for o in shop_orders if o.get('assigned_truck')))
@@ -100,7 +101,7 @@ def get_single_truck(truck_id):
     if not truck:
         return jsonify({"error": "Truck not found"}), 404
     orders = list(db.orders.find(
-        {"assigned_truck": truck_id, "status": {"$ne": "Delivered"}},
+        {"assigned_truck": truck_id, "status": ACTIVE_ORDER_FILTER},
         {"_id": 0, "items": 1}
     ))
     items = []
@@ -127,7 +128,7 @@ def get_truck_cargo(truck_id):
         return jsonify({"error": "Truck not found"}), 404
 
     orders = list(db.orders.find(
-        {"shop_id": shop['shop_id'], "assigned_truck": truck_id, "status": {"$ne": "Delivered"}},
+        {"shop_id": shop['shop_id'], "assigned_truck": truck_id, "status": ACTIVE_ORDER_FILTER},
         {"_id": 0, "order_id": 1, "items": 1, "status": 1}
     ))
 
@@ -159,6 +160,8 @@ def get_truck_cargo(truck_id):
                 "storage_temp": item.get('storage_temp', 'N/A'),
                 "supplier":   item.get('supplier', ''),
                 "order_id":   order['order_id'],
+                "shop_id":    shop['shop_id'],
+                "shop_name":  shop.get('shop_name'),
                 "image":      PRODUCT_IMAGES.get(
                     item['product_id'],
                     "https://images.unsplash.com/photo-1542838132-92c53300491e?w=200&q=80",
@@ -179,6 +182,7 @@ def get_truck_cargo(truck_id):
         "truck":   truck,
         "cargo":   cargo_batches,
         "shop_id": shop['shop_id'],
+        "shop_name": shop.get('shop_name'),
     }), 200
 
 
@@ -219,14 +223,23 @@ def receive_sensor_data():
         socketio.emit("fleet_updated", {"truck_id": truck_id, "alert_level": alert_level})
 
     if current_temp > 0:
+        truck = get_truck_doc(truck_id) or {}
+        active_orders = list(db.orders.find(
+            {"assigned_truck": truck_id, "status": ACTIVE_ORDER_FILTER},
+            {"_id": 0, "items": 1}
+        ))
+        active_items = [item for order in active_orders for item in order.get("items", [])]
+        risk_summary = summarize_truck_risk(truck, active_items, use_ai=False)
+        base_price = 500 if risk_summary.get("level") == "watch" else 650 if risk_summary.get("level") == "warning" else 800
         print(f"[ALERT] Critical temp in {batch_id}. Triggering auction...")
         start_auction_in_memory(
             auction_id=f"A-{batch_id}",
             truck_id=truck_id,
             batch_item=f"URGENT: {batch_name} (Temp Breach: {current_temp}C)",
-            base_price=800,
+            base_price=base_price,
             truck_lat=truck_lat,
             truck_lng=truck_lng,
+            risk_summary=risk_summary,
         )
         return jsonify({"status": "Anomaly Detected", "action": "Auction Triggered"}), 200
 

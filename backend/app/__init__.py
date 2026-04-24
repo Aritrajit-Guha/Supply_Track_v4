@@ -6,14 +6,30 @@ import os
 from dotenv import load_dotenv
 
 load_dotenv()
-FRONTEND_URL = os.getenv("FRONTEND_URL")
 socketio = SocketIO()
 mongo_client = None
 db = None
 
+
+def get_allowed_origins():
+    raw = os.getenv("FRONTEND_URL", "")
+    configured = [origin.strip() for origin in raw.split(",") if origin.strip()]
+    local_defaults = [
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:5174",
+    ]
+    allowed = []
+    for origin in configured + local_defaults:
+        if origin not in allowed:
+            allowed.append(origin)
+    return allowed
+
 def create_app():
     app = Flask(__name__)
-    CORS(app, resources={r"/api/*":{"origins":FRONTEND_URL}})
+    allowed_origins = get_allowed_origins()
+    CORS(app, resources={r"/api/*": {"origins": allowed_origins}})
 
     global mongo_client, db
     mongo_uri = os.getenv("MONGO_URI")
@@ -25,7 +41,7 @@ def create_app():
     except Exception as e:
         print(f"❌ Failed to connect to MongoDB: {e}")
 
-    socketio.init_app(app, cors_allowed_origins=FRONTEND_URL)
+    socketio.init_app(app, cors_allowed_origins=allowed_origins)
 
     from .controllers.truck_controller import truck_bp
     from .controllers.auction_controller import auction_bp

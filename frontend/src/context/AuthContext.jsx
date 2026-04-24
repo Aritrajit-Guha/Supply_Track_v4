@@ -1,39 +1,48 @@
-import { createContext, useState, useEffect, useContext, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
+import { AuthContext } from './AuthContextValue';
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL;
 
-const AuthContext = createContext();
-export const useAuth = () => useContext(AuthContext);
-
 const API = `${BACKEND_URL}/api`;
 
+function getStoredUser() {
+  const storedUser = sessionStorage.getItem('shopUser');
+  return storedUser ? JSON.parse(storedUser) : null;
+}
+
 export const AuthProvider = ({ children }) => {
-  const [user, setUser] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [user, setUser] = useState(() => getStoredUser());
+  const [loading, setLoading] = useState(() => Boolean(sessionStorage.getItem('token') && getStoredUser()));
   const navigate = useNavigate();
 
   useEffect(() => {
+    let isMounted = true;
     const token      = sessionStorage.getItem('token');
-    const storedUser = sessionStorage.getItem('shopUser');
+    const storedUser = getStoredUser();
     if (token && storedUser) {
-      setUser(JSON.parse(storedUser));
       // Always re-fetch fresh profile so green_credits are current
       axios.get(`${API}/auth/profile`, {
         headers: { Authorization: `Bearer ${token}` }
       }).then(r => {
+        if (!isMounted) return;
         sessionStorage.setItem('shopUser', JSON.stringify(r.data));
         setUser(r.data);
       }).catch((err) => {
-  console.error("Profile fetch failed", err);
-  // fallback: still keep user from storage
-  setUser(JSON.parse(storedUser));
-})
-  .finally(()=>setLoading(false));
-    }else{
-      setLoading(false);
+        if (!isMounted) return;
+        console.error("Profile fetch failed", err);
+      })
+      .finally(() => {
+        if (isMounted) {
+          setLoading(false);
+        }
+      });
     }
+
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
   const login = (token, userData) => {
@@ -64,7 +73,7 @@ export const AuthProvider = ({ children }) => {
       console.error('Could not refresh profile', e);
     }
   }, []);
-  if(loading) return null;
+  if (loading) return null;
   return (
     <AuthContext.Provider value={{ user, login, logout, refreshProfile }}>
       {children}

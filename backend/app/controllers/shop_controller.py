@@ -1,6 +1,7 @@
 from flask import Blueprint, request, jsonify
 from app import db, socketio
 from app.services.fleet_automation_service import seed_trucks_if_needed, sync_and_advance_fleet
+from app.services.recommendation_service import build_shop_recommendations
 import jwt
 import os
 import uuid
@@ -267,3 +268,12 @@ def get_order(order_id):
     if not order:
         return jsonify({"error": "Order not found"}), 404
     return jsonify(order), 200
+
+
+@shop_bp.route('/recommendations', methods=['GET'])
+def get_recommendations():
+    shop = get_shop_from_token()
+    if not shop:
+        return jsonify({"error": "Unauthorized"}), 401
+    recommendations = build_shop_recommendations(shop['shop_id'], use_ai=False)
+    return jsonify(recommendations), 200

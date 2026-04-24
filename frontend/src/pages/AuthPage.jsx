@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import api from '../services/api';
-import { useAuth } from '../context/AuthContext';
+import { useAuth } from '../context/useAuth';
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL;
 
