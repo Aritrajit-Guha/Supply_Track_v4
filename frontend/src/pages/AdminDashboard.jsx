@@ -4,7 +4,7 @@ import api from '../services/api';
 import socket from '../services/socket';
 import AuctionModal from '../components/AuctionModal';
 import AIChatWidget from '../components/AIChatWidget';
-import { useAuth } from '../context/AuthContext';
+import { useAuth } from '../context/useAuth';
 import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
@@ -22,6 +22,11 @@ const ALERT_STYLES = {
 };
 
 const STATUS_ICON = { 'In Transit': '🚛', 'Loading': '📦', 'Delivered': '✅', 'Delayed': '⚠️' };
+const RISK_COLORS = { safe: '#22c55e', watch: '#facc15', warning: '#f59e0b', critical: '#ef4444' };
+
+function formatInsightSource(source) {
+  return source === 'gemini' ? 'Gemini + app context' : 'Rule-based fallback';
+}
 
 function makeTruckIcon(color, isSelected) {
   const size = isSelected ? 44 : 36;
@@ -95,6 +100,7 @@ function TruckMap({ trucks, selectedId, onSelectTruck }) {
 function TruckCard({ truck, isSelected, onClick, onInspect }) {
   const al     = ALERT_STYLES[truck.alert_level] || ALERT_STYLES.normal;
   const progress = Math.round(100 - (truck.distance_left_km / (truck.distance_left_km + 50)) * 100);
+  const risk = truck.risk_summary || { level: 'safe', score: 0, summary: 'No active cargo risk detected.' };
 
   return (
     <div onClick={onClick} style={{ background: isSelected ? '#0f172a' : '#111827', borderRadius: '16px', border: `2px solid ${isSelected ? al.border : '#1e293b'}`, overflow: 'hidden', cursor: 'pointer', transition: 'all 0.2s', boxShadow: isSelected ? `0 0 24px ${al.border}33` : '0 4px 12px rgba(0,0,0,0.3)' }}>
@@ -131,6 +137,14 @@ function TruckCard({ truck, isSelected, onClick, onInspect }) {
           ))}
         </div>
 
+        <div style={{ background: '#081120', borderRadius: '8px', padding: '10px 12px', marginBottom: '12px', border: `1px solid ${(RISK_COLORS[risk.level] || '#22c55e')}44` }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
+            <span style={{ fontSize: '11px', color: '#64748b', textTransform: 'uppercase' }}>Spoilage Risk</span>
+            <span style={{ fontSize: '12px', fontWeight: 800, color: RISK_COLORS[risk.level] || '#22c55e' }}>{risk.level.toUpperCase()} · {risk.score}/100</span>
+          </div>
+          <div style={{ fontSize: '12px', color: '#cbd5e1', lineHeight: 1.4 }}>{risk.summary}</div>
+        </div>
+
         <div style={{ marginBottom: '12px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: '#64748b', marginBottom: '4px' }}>
             <span>{truck.distance_left_km} km remaining</span><span>{truck.speed_kmh} km/h</span>
@@ -154,8 +168,28 @@ export default function AdminDashboard() {
   const [selectedTruck, setSelectedTruck] = useState(null);
   const [activeAuction, setActiveAuction] = useState(null);
   const [greenCredits,  setGreenCredits]  = useState(0);
+  const [shipmentInsights, setShipmentInsights] = useState(null);
+  const [insightsLoadingMode, setInsightsLoadingMode] = useState(null);
+  const [auctionNotice, setAuctionNotice] = useState(null);
   const navigate = useNavigate();
   const { user, logout } = useAuth();
+
+  const fetchShipmentInsights = async (mode = 'fallback') => {
+    setInsightsLoadingMode(mode);
+    try {
+      const response = await api.get(`/ai/shipment-insights?mode=${mode}`);
+      setShipmentInsights(response.data);
+    } catch (error) {
+      console.error('Error fetching shipment insights:', error);
+      setShipmentInsights({
+        summary: 'Shipment insights are temporarily unavailable. You can still use the truck cards and diagnostics below.',
+        highlights: ['Retry the panel refresh once the backend is reachable again.'],
+        source: 'fallback',
+      });
+    } finally {
+      setInsightsLoadingMode(null);
+    }
+  };
 
   useEffect(() => {
     const fetchFleet = () => {
@@ -175,21 +209,53 @@ export default function AdminDashboard() {
 
     const handleFleetUpdate = () => fetchFleet();
     const handleEmergencyAuction = (data) => {
-      if (!user?.lat || !user?.lng) return;
+      if (!user) return;
+      const eligibleShopIds = data.eligible_shop_ids || [];
+      if (eligibleShopIds.length > 0) {
+        if (eligibleShopIds.includes(user.shop_id)) {
+          setActiveAuction(data);
+        }
+        return;
+      }
+      if (!user.lat || !user.lng) return;
       if (haversine(user.lat, user.lng, data.truck_lat, data.truck_lng) <= 15) {
         setActiveAuction(data);
       }
     };
+    const handleAuctionResult = (data) => {
+      if (!user || !data) return;
+
+      const isWinner = data.winner_id && data.winner_id === user.shop_id;
+      const isSource = data.source_shop_id && data.source_shop_id === user.shop_id;
+      if (!isWinner && !isSource) return;
+
+      setAuctionNotice({
+        tone: isWinner ? 'success' : data.order_transferred ? 'danger' : 'info',
+        title: isWinner ? 'Auction won' : data.order_transferred ? 'Batch diverted via auction' : 'Auction finished',
+        body: isWinner
+          ? `You won the flash auction for truck ${data.truck_id} at Rs ${data.final_price}.`
+          : data.order_transferred
+            ? `${data.winner_name || 'Another shop'} won your flash auction on truck ${data.truck_id}. The batch has been removed from your live fleet.`
+            : `The flash auction for truck ${data.truck_id} has ended.`,
+      });
+      setActiveAuction(null);
+      fetchFleet();
+      fetchShipmentInsights('fallback');
+      setTimeout(() => setAuctionNotice(null), 7000);
+    };
 
     fetchFleet();
+    fetchShipmentInsights();
     const intervalId = setInterval(fetchFleet, 10000);
     socket.on('fleet_updated', handleFleetUpdate);
     socket.on('emergency_auction_started', handleEmergencyAuction);
+    socket.on('auction_result', handleAuctionResult);
 
     return () => {
       clearInterval(intervalId);
       socket.off('fleet_updated', handleFleetUpdate);
       socket.off('emergency_auction_started', handleEmergencyAuction);
+      socket.off('auction_result', handleAuctionResult);
     };
   }, [user]);
 
@@ -254,6 +320,46 @@ export default function AdminDashboard() {
           </div>
         </div>
 
+        <div style={{ background: 'linear-gradient(135deg,#0b1220,#12223d)', border: '1px solid #1e3a5f', borderRadius: '16px', padding: '20px', marginBottom: '24px', boxShadow: '0 12px 32px rgba(0,0,0,0.25)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: '16px', alignItems: 'flex-start', marginBottom: '12px', flexWrap: 'wrap' }}>
+            <div>
+              <div style={{ fontSize: '12px', color: '#60a5fa', fontWeight: 800, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: '4px' }}>AI Shipment Insights</div>
+              <div style={{ fontSize: '20px', fontWeight: 900, color: '#f8fafc', marginBottom: '4px' }}>Operations summary for active deliveries</div>
+              <div style={{ fontSize: '12px', color: '#94a3b8' }}>
+                {shipmentInsights ? formatInsightSource(shipmentInsights.source) : 'Preparing initial summary'}
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+              <button
+                onClick={() => fetchShipmentInsights('fallback')}
+                disabled={insightsLoadingMode === 'fallback'}
+                style={{ background: '#1e293b', color: '#cbd5e1', border: '1px solid #334155', borderRadius: '10px', padding: '10px 14px', minWidth: '140px', textAlign: 'center', cursor: insightsLoadingMode === 'fallback' ? 'default' : 'pointer', fontWeight: 700 }}
+              >
+                {insightsLoadingMode === 'fallback' ? 'Refreshing...' : 'Refresh'}
+              </button>
+              <button
+                onClick={() => fetchShipmentInsights('ai')}
+                disabled={insightsLoadingMode === 'ai'}
+                style={{ background: 'linear-gradient(135deg,#1d4ed8,#2563eb)', color: 'white', border: 'none', borderRadius: '10px', padding: '10px 14px', minWidth: '190px', textAlign: 'center', cursor: insightsLoadingMode === 'ai' ? 'default' : 'pointer', fontWeight: 800, boxShadow: '0 8px 20px rgba(37,99,235,0.3)' }}
+              >
+                {insightsLoadingMode === 'ai' ? 'Running Gemini...' : 'Run Gemini Summary'}
+              </button>
+            </div>
+          </div>
+
+          <div style={{ fontSize: '15px', color: '#e2e8f0', lineHeight: 1.6, marginBottom: '14px' }}>
+            {shipmentInsights?.summary || 'Building an operations view from live truck, risk, and auction data.'}
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(220px,1fr))', gap: '12px' }}>
+            {(shipmentInsights?.highlights || ['Insights will appear here once the summary endpoint responds.']).map((highlight) => (
+              <div key={highlight} style={{ background: 'rgba(15,23,42,0.85)', border: '1px solid #233657', borderRadius: '12px', padding: '12px 14px', fontSize: '13px', color: '#cbd5e1', lineHeight: 1.5 }}>
+                {highlight}
+              </div>
+            ))}
+          </div>
+        </div>
+
         {/* 2. THE EMPTY STATE UI */}
         {fleet.length === 0 ? (
           <div style={{ textAlign: 'center', padding: '100px 20px', background: '#0a1628', borderRadius: '16px', border: '1px dashed #1e3a5f', marginTop: '20px' }}>
@@ -273,6 +379,7 @@ export default function AdminDashboard() {
                 const t  = fleet.find(x => x.truck_id === selectedTruck);
                 if (!t) return null;
                 const al = ALERT_STYLES[t.alert_level] || ALERT_STYLES.normal;
+                const risk = t.risk_summary || { level: 'safe', score: 0, summary: 'No active cargo risk detected.', recommended_action: 'Continue standard monitoring.' };
                 return (
                   <div style={{ marginTop: '16px', background: '#0a1628', borderRadius: '14px', border: `1px solid ${al.border}33`, padding: '20px', display: 'flex', gap: '20px', alignItems: 'center' }}>
                     <img src={t.cargo_image} alt="" style={{ width: '80px', height: '80px', objectFit: 'cover', borderRadius: '10px', flexShrink: 0 }} />
@@ -283,6 +390,10 @@ export default function AdminDashboard() {
                         {[`🌡️ ${t.current_temperature}°C`, `⏱️ ETA ${t.eta_hours}h`, `📍 ${t.distance_left_km} km left`, `👤 ${t.driver}`].map(tag => (
                           <span key={tag} style={{ background: '#1e293b', color: '#94a3b8', borderRadius: '6px', padding: '3px 10px', fontSize: '12px' }}>{tag}</span>
                         ))}
+                      </div>
+                      <div style={{ marginTop: '10px', fontSize: '12px', color: '#cbd5e1' }}>
+                        Risk: <span style={{ color: RISK_COLORS[risk.level] || '#22c55e', fontWeight: 800 }}>{risk.level.toUpperCase()} · {risk.score}/100</span>
+                        {' '}· {risk.summary}
                       </div>
                     </div>
                     <button onClick={() => navigate(`/truck/${t.truck_id}`)}
@@ -310,6 +421,26 @@ export default function AdminDashboard() {
       </div>
 
       {activeAuction && <AuctionModal auctionData={activeAuction} onClose={() => setActiveAuction(null)} />}
+      {auctionNotice && (
+        <div style={{
+          position: 'fixed',
+          top: '84px',
+          right: '24px',
+          zIndex: 400,
+          maxWidth: '360px',
+          background: auctionNotice.tone === 'success' ? '#052e16' : auctionNotice.tone === 'danger' ? '#450a0a' : '#0f172a',
+          color: 'white',
+          border: `1px solid ${auctionNotice.tone === 'success' ? '#16a34a' : auctionNotice.tone === 'danger' ? '#ef4444' : '#334155'}`,
+          borderRadius: '12px',
+          padding: '14px 16px',
+          boxShadow: '0 18px 40px rgba(0,0,0,0.22)',
+        }}>
+          <div style={{ fontSize: '12px', fontWeight: 800, textTransform: 'uppercase', marginBottom: '4px', color: auctionNotice.tone === 'success' ? '#86efac' : auctionNotice.tone === 'danger' ? '#fca5a5' : '#93c5fd' }}>
+            {auctionNotice.title}
+          </div>
+          <div style={{ fontSize: '13px', lineHeight: 1.5 }}>{auctionNotice.body}</div>
+        </div>
+      )}
       <AIChatWidget page="fleet" accent="dark" />
 
       <style>{`

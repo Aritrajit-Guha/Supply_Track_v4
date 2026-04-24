@@ -67,6 +67,7 @@ TRUCK_BLUEPRINTS = {
 LOADING_MINUTES = 1
 TRANSIT_MINUTES = 8
 DELIVERED_MINUTES = LOADING_MINUTES + TRANSIT_MINUTES
+INACTIVE_ORDER_STATUSES = ["Delivered", "Auctioned Away"]
 
 
 def seed_trucks_if_needed() -> None:
@@ -111,7 +112,7 @@ def sync_and_advance_fleet() -> None:
 
     for truck_id, blueprint in TRUCK_BLUEPRINTS.items():
         order = db.orders.find_one(
-            {"assigned_truck": truck_id, "status": {"$ne": "Delivered"}},
+            {"assigned_truck": truck_id, "status": {"$nin": INACTIVE_ORDER_STATUSES}},
             {"_id": 0},
             sort=[("created_at", 1)],
         )

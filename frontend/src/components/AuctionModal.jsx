@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import socket from '../services/socket';
-import { useAuth } from '../context/AuthContext';
+import { useAuth } from '../context/useAuth';
 
 export default function AuctionModal({ auctionData, onClose }) {
   const { user } = useAuth();
@@ -30,7 +30,7 @@ export default function AuctionModal({ auctionData, onClose }) {
     }
     const id = setInterval(() => setTimeLeft(p => p - 1), 1000);
     return () => clearInterval(id);
-  }, [timeLeft]);
+  }, [auctionData.auction_id, timeLeft]);
 
   // Socket listeners
   useEffect(() => {
@@ -146,6 +146,11 @@ export default function AuctionModal({ auctionData, onClose }) {
         <div style={{ background: '#0f172a', borderRadius: '10px', padding: '12px 16px', marginBottom: '16px', borderLeft: '4px solid #ef4444' }}>
           <div style={{ fontSize: '11px', color: '#64748b', textTransform: 'uppercase', marginBottom: '4px' }}>Inventory at Risk</div>
           <div style={{ fontWeight: 700, color: '#f1f5f9', fontSize: '14px' }}>{auctionData.batch_item}</div>
+          {auctionData.reasoning && (
+            <div style={{ marginTop: '8px', fontSize: '12px', color: '#93c5fd', lineHeight: 1.5 }}>
+              {auctionData.reasoning}
+            </div>
+          )}
         </div>
 
         {/* --- DECISION UI (Only show if they haven't joined yet) --- */}

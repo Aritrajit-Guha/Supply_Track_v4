@@ -11,6 +11,7 @@ const DEFAULT_PROMPTS = {
   fleet: [
     'Which truck is the highest priority right now?',
     'Explain the current warning in my fleet',
+    'Summarize today’s shipment risks',
     'Prepare an auction trigger recommendation',
   ],
 };

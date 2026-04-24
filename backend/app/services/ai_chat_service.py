@@ -4,6 +4,8 @@ from datetime import datetime
 from app import db
 from app.controllers.auction_controller import active_auction_state
 from app.services.fleet_automation_service import get_trucks_for_ids, seed_trucks_if_needed, sync_and_advance_fleet
+from app.services.recommendation_service import build_shop_recommendations
+from app.services.spoilage_risk_service import summarize_truck_risk
 from .gemini_service import GeminiServiceError, gemini_is_configured, generate_json_response
 
 
@@ -77,6 +79,7 @@ def build_chat_context(shop_id: str, question: str, page: str | None = None) -> 
                 "items.quantity": 1,
                 "items.category": 1,
                 "items.shelf_life_days": 1,
+                "items.storage_temp": 1,
             },
         ).sort("created_at", -1).limit(5)
     )
@@ -89,6 +92,19 @@ def build_chat_context(shop_id: str, question: str, page: str | None = None) -> 
         }
     )
     assigned_trucks = get_trucks_for_ids(assigned_truck_ids)
+    items_by_truck = {}
+    for order in recent_orders:
+        truck_id = order.get("assigned_truck")
+        if not truck_id:
+            continue
+        items_by_truck.setdefault(truck_id, []).extend(order.get("items", []))
+
+    for truck in assigned_trucks:
+        truck["risk_summary"] = summarize_truck_risk(
+            truck,
+            items_by_truck.get(truck["truck_id"], []),
+            use_ai=False,
+        )
 
     active_auction = None
     if active_auction_state.get("is_active"):
@@ -109,6 +125,7 @@ def build_chat_context(shop_id: str, question: str, page: str | None = None) -> 
         "page": page or "unknown",
         "has_active_auction": bool(active_auction),
     }
+    recommendations = build_shop_recommendations(shop_id, use_ai=False)
 
     return {
         "question": question,
@@ -117,6 +134,7 @@ def build_chat_context(shop_id: str, question: str, page: str | None = None) -> 
         "recent_orders": recent_orders,
         "assigned_trucks": assigned_trucks,
         "active_auction": active_auction,
+        "recommendations": recommendations,
         "snapshot": snapshot,
     }
 
@@ -129,6 +147,7 @@ def build_user_prompt(context: dict, question: str) -> str:
             "recent_orders": context["recent_orders"],
             "assigned_trucks": context["assigned_trucks"],
             "active_auction": context["active_auction"],
+            "recommendations": context["recommendations"],
         },
         ensure_ascii=True,
         default=str,
@@ -168,16 +187,22 @@ def build_fallback_response(context: dict, question: str) -> dict:
             actions = ["Place an order to activate fleet tracking for your shop."]
             return build_response(answer, actions, [], [], [])
 
-        risky = [truck for truck in trucks if truck.get("alert_level") in {"warning", "critical"}]
+        risky = [
+            truck for truck in trucks
+            if (truck.get("risk_summary") or {}).get("level") in {"warning", "critical"}
+            or truck.get("alert_level") in {"warning", "critical"}
+        ]
         primary = risky[0] if risky else trucks[0]
+        risk_summary = primary.get("risk_summary") or {}
         answer = (
             f"{primary['truck_id']} is the highest-priority truck in your fleet view. "
-            f"It is {primary['status']} with alert level {primary['alert_level']}, "
-            f"temperature {primary['current_temperature']}C, and ETA {primary['eta_hours']}h."
+            f"It is {primary['status']} with spoilage risk {risk_summary.get('level', 'safe')}, "
+            f"risk score {risk_summary.get('score', 0)}/100, temperature {primary['current_temperature']}C, "
+            f"and ETA {primary['eta_hours']}h."
         )
         actions = [
             f"Open {primary['truck_id']} diagnostics for cargo details.",
-            "Review current fleet summary on the Fleet dashboard.",
+            risk_summary.get("recommended_action", "Review current fleet summary on the Fleet dashboard."),
         ]
         return build_response(answer, actions, [], [primary["truck_id"]], [])
 
@@ -198,17 +223,18 @@ def build_fallback_response(context: dict, question: str) -> dict:
         return build_response(answer, actions, [], [auction["truck_id"]], [auction["auction_id"]])
 
     if any(term in question_lower for term in ["restock", "reorder", "stock"]):
-        recommendations = suggest_restock_products(orders)
+        recommendation_payload = context.get("recommendations") or {}
+        recommendations = recommendation_payload.get("recommendations") or []
         if recommendations:
-            answer = (
+            answer = recommendation_payload.get("summary") or (
                 "Based on your recent orders, the strongest restock candidates are "
-                + ", ".join(recommendations[:3])
+                + ", ".join(item["name"] for item in recommendations[:3])
                 + "."
             )
-            actions = [
+            actions = (recommendation_payload.get("highlights") or [
                 "Review those products in the wholesale catalogue.",
                 "Balance short-shelf-life items with smaller quantities if demand is uncertain.",
-            ]
+            ])[:3]
         else:
             answer = "There is not enough order history yet for a confident restock suggestion."
             actions = ["Place a few orders first so the assistant can spot reorder patterns."]
@@ -255,18 +281,6 @@ def normalize_ai_response(ai_response: dict, fallback: dict) -> dict:
             "auction_ids": entities.get("auction_ids") or fallback["referenced_entities"]["auction_ids"],
         },
     }
-
-
-def suggest_restock_products(orders: list[dict]) -> list[str]:
-    counts: dict[str, int] = {}
-    for order in orders:
-        for item in order.get("items", []):
-            name = item.get("name")
-            if not name:
-                continue
-            counts[name] = counts.get(name, 0) + int(item.get("quantity", 0))
-    return [name for name, _ in sorted(counts.items(), key=lambda item: item[1], reverse=True)]
-
 
 def log_interaction(shop_id: str, question: str, response_payload: dict, page: str | None) -> None:
     try:
